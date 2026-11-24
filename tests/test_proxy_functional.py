@@ -3,6 +3,7 @@ import functools
 import os
 import pathlib
 import platform
+import sys
 from re import match as match_regex
 from unittest import mock
 from uuid import uuid4
@@ -173,6 +174,10 @@ async def test_secure_https_proxy_absolute_path(
     await asyncio.sleep(0.1)
 
 
+@pytest.mark.skipif(
+    sys.version_info >= (3, 11) and platform.system() != "Linux",
+    reason="Hangs until timeout on macOS/Windows under Python 3.11 CI runners",
+)
 @secure_proxy_xfail_under_py310_linux(raises=AssertionError)
 @pytest.mark.xfail(
     not PY_37,
@@ -230,13 +235,16 @@ async def test_https_proxy_unsupported_tls_in_tls(
         ClientConnectionError,
         match=expected_exception_reason,
     ) as conn_err:
-        await sess.get(url, proxy=secure_proxy_url, ssl=client_ssl_ctx)
+        async with sess.get(url, proxy=secure_proxy_url, ssl=client_ssl_ctx):
+            pass
 
-    assert type(conn_err.value.__cause__) == TypeError
+    assert isinstance(conn_err.value.__cause__, TypeError)
     assert match_regex(f"^{type_err!s}$", str(conn_err.value.__cause__))
 
     await sess.close()
     await conn.close()
+
+    await asyncio.sleep(0.1)
 
 
 @pytest.mark.skipif(

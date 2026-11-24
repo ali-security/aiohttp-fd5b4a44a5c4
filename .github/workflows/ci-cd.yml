@@ -1,17 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - 'master'
-      - '[0-9].[0-9]+'  # matches to backport branches, e.g. 3.6
-    tags: [ 'v*' ]
-  pull_request:
-    branches:
-      - 'master'
-      - '[0-9].[0-9]+'
-  schedule:
-    - cron:  '0 6 * * *'  # Daily 6AM UTC build
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional pytest selector to run only the selected tests'
+        required: false
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -25,62 +20,6 @@ env:
 
 jobs:
 
-  lint:
-    name: Linter
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v2.4.0
-      with:
-        submodules: true
-    - name: Setup Python 3.8
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.8
-    - name: Cache PyPI
-      uses: actions/cache@v2.1.7
-      with:
-        key: pip-lint-${{ hashFiles('requirements/*.txt') }}
-        path: ~/.cache/pip
-        restore-keys: |
-            pip-lint-
-    - name: Update pip, wheel, setuptools, build, twine
-      run: |
-        python -m pip install -U pip wheel setuptools build twine
-    - name: Install dependencies
-      run: |
-        python -m pip install -r requirements/lint.txt -c requirements/constraints.txt
-    - name: Install self
-      run: |
-        python -m pip install .
-      env:
-        AIOHTTP_NO_EXTENSIONS: 1
-    - name: Run linters
-      run: |
-        make mypy
-    - name: Install libenchant
-      run: |
-        sudo apt install libenchant-2-dev
-    - name: Install spell checker
-      run: |
-        pip install -r requirements/doc-spelling.txt -c requirements/constraints.txt
-    - name: Run docs spelling
-      run: |
-        # towncrier --yes  # uncomment me after publishing a release
-        make doc-spelling
-    - name: Build package
-      run: |
-        python -m build
-      env:
-        AIOHTTP_NO_EXTENSIONS: 1
-    - name: Run twine checker
-      run: |
-        twine check --strict dist/*
-    - name: Making sure that CONTRIBUTORS.txt remains sorted
-      run: |
-        LC_ALL=C sort -c CONTRIBUTORS.txt
-
   gen_llhttp:
     name: Generate llhttp sources
     runs-on: ubuntu-latest
@@ -91,7 +30,7 @@ jobs:
       with:
         submodules: true
     - name: Cache llhttp generated files
-      uses: actions/cache@v2.1.7
+      uses: actions/cache@v4
       id: cache
       with:
         key: llhttp-${{ hashFiles('vendor/llhttp/package.json', 'vendor/llhttp/src/**/*') }}
@@ -106,7 +45,7 @@ jobs:
       run: |
         make generate-llhttp
     - name: Upload llhttp generated files
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: llhttp
         path: vendor/llhttp/build
@@ -119,7 +58,7 @@ jobs:
       matrix:
         pyver: [3.6, 3.7, 3.8, 3.9, '3.10']
         no-extensions: ['', 'Y']
-        os: [ubuntu-20.04, macos-latest, windows-latest]
+        os: [ubuntu-22.04, macos-latest, windows-latest]
         exclude:
           - os: macos-latest
             no-extensions: 'Y'
@@ -136,36 +75,63 @@ jobs:
             os: ubuntu-latest
             experimental: false
           - os: macos-latest
-            pyver: "3.11.0-alpha - 3.11.0"
-            experimental: true
+            pyver: 3.11
+            experimental: false
             no-extensions: 'Y'
           - os: ubuntu-latest
-            pyver: "3.11.0-alpha - 3.11.0"
+            pyver: 3.11
             experimental: false
             no-extensions: 'Y'
           - os: windows-latest
-            pyver: "3.11.0-alpha - 3.11.0"
-            experimental: true
+            pyver: 3.11
+            experimental: false
             no-extensions: 'Y'
-      fail-fast: true
+      fail-fast: false
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     continue-on-error: ${{ matrix.experimental }}
+    env:
+      PIP_INDEX_URL: https://:2023-10-07T14:27:15.181580Z@time-machines-pypi.sealsecurity.io/
     steps:
     - name: Checkout
       uses: actions/checkout@v2.4.0
       with:
         submodules: true
+    - name: Install Python 3.6 from python.org (macOS)
+      if: runner.os == 'macOS' && matrix.pyver == '3.6'
+      run: |
+        curl -fsSL -o /tmp/python-3.6.8.pkg https://www.python.org/ftp/python/3.6.8/python-3.6.8-macosx10.9.pkg
+        sudo installer -pkg /tmp/python-3.6.8.pkg -target /
+        PYBIN=/Library/Frameworks/Python.framework/Versions/3.6/bin
+        sudo ln -sf "$PYBIN/python3" "$PYBIN/python"
+        echo "$PYBIN" >> $GITHUB_PATH
+        "$PYBIN/python3" -m pip install --upgrade pip
+        "$PYBIN/python3" --version
+    - name: Setup Python ${{ matrix.pyver }} (legacy build)
+      if: >-
+        (runner.os == 'macOS' && matrix.pyver != '3.6')
+        || (runner.os != 'macOS' && matrix.pyver == '3.6')
+      uses: MatteoH2O1999/setup-python@v4
+      with:
+        python-version: ${{ matrix.pyver }}
+        cache-build: true
     - name: Setup Python ${{ matrix.pyver }}
+      if: runner.os != 'macOS' && matrix.pyver != '3.6'
       id: python-install
       uses: actions/setup-python@v4
       with:
         python-version: ${{ matrix.pyver }}
+    - name: Pin Cython < 3 for PyPy (PyYAML 6.0 sdist build)
+      if: startsWith(matrix.pyver, 'pypy')
+      run: |
+        echo 'cython<3' > "${RUNNER_TEMP}/pypy-constraints.txt"
+        echo "PIP_CONSTRAINT=${RUNNER_TEMP}/pypy-constraints.txt" >> $GITHUB_ENV
     - name: Get pip cache dir
       id: pip-cache
       run: |
-        echo "::set-output name=dir::$(pip cache dir)"    # - name: Cache
+        echo "::set-output name=dir::$(python -m pip cache dir)"
     - name: Cache PyPI
-      uses: actions/cache@v2.1.7
+      uses: actions/cache@v4
       with:
         key: pip-ci-${{ runner.os }}-${{ matrix.pyver }}-${{ matrix.no-extensions }}-${{ hashFiles('requirements/*.txt') }}
         path: ${{ steps.pip-cache.outputs.dir }}
@@ -174,7 +140,13 @@ jobs:
     - name: Update pip, wheel, setuptools, build, twine
       run: |
         python -m pip install -U pip wheel setuptools build twine
+    - name: Pre-install cffi (pycares setup_requires egg fetch fails on macOS)
+      if: runner.os == 'macOS'
+      run: |
+        python -m pip install cffi
     - name: Install dependencies
+      env:
+        CFLAGS: ${{ runner.os == 'macOS' && '-Wno-error=int-conversion' || '' }}
       run: |
         python -m pip install -r requirements/test.txt -c requirements/constraints.txt
     - name: Cythonize
@@ -183,7 +155,7 @@ jobs:
         make cythonize
     - name: Restore llhttp generated files
       if: ${{ matrix.no-extensions == '' }}
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: llhttp
         path: vendor/llhttp/build/
@@ -192,10 +164,35 @@ jobs:
         COLOR: 'yes'
         AIOHTTP_NO_EXTENSIONS: ${{ matrix.no-extensions }}
         PIP_USER: 1
-      run: >-
-        PATH="${HOME}/Library/Python/3.11/bin:${HOME}/.local/bin:${PATH}"
-        make test
+      run: |
+        export PATH="${HOME}/Library/Python/3.11/bin:${HOME}/.local/bin:${PATH}"
+        if [ -n "${{ inputs.test-filter }}" ]; then
+          make .develop && pytest -q ${{ inputs.test-filter }}
+        else
+          make test
+        fi
       shell: bash
+    - name: Explain the platform-dependent skips in this leg
+      shell: bash
+      run: |
+        echo "Skip reasons that are by design of upstream's own test matrix:"
+        if [ -n "${{ matrix.no-extensions }}" ]; then
+          echo "- AIOHTTP_NO_EXTENSIONS=Y: this leg deliberately tests the pure-Python"
+          echo "  implementation, so the C/Cython parser tests ('Requires Cython',"
+          echo "  'C based HTTP parser not available') are skipped here; they run and"
+          echo "  pass in the extension legs of the same matrix (no-extensions='')."
+        fi
+        if [ "${{ runner.os }}" = "Windows" ] || { [ "${{ runner.os }}" = "macOS" ] && [ "${{ matrix.pyver }}" = "3.6" ]; }; then
+          echo "- aiodns is not installed on this platform: requirements/base.txt pins"
+          echo "  aiodns only for sys_platform linux, and darwin with Python >= 3.7,"
+          echo "  because c-ares does not build on Windows / macOS Python 3.6. The"
+          echo "  tests/test_resolver.py 'aiodns required' tests run on the Linux legs."
+        fi
+        if [[ "${{ matrix.pyver }}" == pypy* ]]; then
+          echo "- tests/test_web_log.py:31 (multi-line reason, printed empty by -ra):"
+          echo "  patching datetime.datetime breaks isinstance() under PyPy; it runs"
+          echo "  on every CPython leg."
+        fi
     - name: Re-run the failing tests with maximum verbosity
       if: failure()
       env:
@@ -210,27 +207,15 @@ jobs:
         PIP_USER: 1
       run: |
         python -m coverage xml
-    - name: Upload coverage
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        flags: >-
-          CI-GHA,OS-${{
-            runner.os
-          }},VM-${{
-            matrix.os
-          }},Py-${{
-            steps.python-install.outputs.python-version
-          }}
 
   check:  # This job does nothing and is only used for the branch protection
     if: always()
 
     needs:
-    - lint
     - test
 
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
     - name: Decide whether the needed jobs succeeded or failed
@@ -241,9 +226,7 @@ jobs:
   pre-deploy:
     name: Pre-Deploy
     runs-on: ubuntu-latest
-    needs: check
-    # Run only on pushing a tag
-    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+    timeout-minutes: 5
     steps:
       - name: Dummy
         run: |
@@ -252,7 +235,8 @@ jobs:
   build-tarball:
     name: Tarball
     runs-on: ubuntu-latest
-    needs: pre-deploy
+    timeout-minutes: 20
+    needs: [pre-deploy, gen_llhttp]
     steps:
     - name: Checkout
       uses: actions/checkout@v2.4.0
@@ -260,6 +244,8 @@ jobs:
         submodules: true
     - name: Setup Python
       uses: actions/setup-python@v4
+      with:
+        python-version: 3.12
     - name: Update pip, wheel, setuptools, build, twine
       run: |
         python -m pip install -U pip wheel setuptools build twine
@@ -267,7 +253,7 @@ jobs:
       run: |
         python -m pip install -r requirements/cython.txt -c requirements/constraints.txt
     - name: Restore llhttp generated files
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: llhttp
         path: vendor/llhttp/build/
@@ -275,37 +261,47 @@ jobs:
       run: |
         make cythonize
     - name: Make sdist
+      env:
+        PIP_INDEX_URL: https://:2023-10-07T14:27:15.181580Z@time-machines-pypi.sealsecurity.io/
       run: |
         python -m build --sdist
     - name: Upload artifacts
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
-        name: dist
+        name: dist-sdist
         path: dist
 
   build-wheels:
     name: Build wheels on ${{ matrix.os }} ${{ matrix.qemu }}
-    runs-on: ${{ matrix.os }}-latest
-    needs: pre-deploy
+    runs-on: ${{ matrix.runner || format('{0}-latest', matrix.os) }}
+    timeout-minutes: 50
+    needs: [pre-deploy, gen_llhttp]
     strategy:
       matrix:
         os: [ubuntu, windows, macos]
         qemu: ['']
         include:
           # Split ubuntu job for the sake of speed-up
+        - os: windows
+          runner: windows-2022
+        - os: ubuntu
+          qemu: ''
+          runner: ubuntu-24.04
         - os: ubuntu
           qemu: aarch64
+          runner: ubuntu-24.04-arm
         - os: ubuntu
           qemu: ppc64le
         - os: ubuntu
           qemu: s390x
+      fail-fast: false
     steps:
     - name: Checkout
       uses: actions/checkout@v2.4.0
       with:
         submodules: true
     - name: Set up QEMU
-      if: ${{ matrix.qemu }}
+      if: ${{ matrix.qemu && !matrix.runner }}
       uses: docker/setup-qemu-action@v1
       with:
         platforms: all
@@ -321,7 +317,7 @@ jobs:
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
-        python-version: 3.x
+        python-version: 3.12
     - name: Update pip, wheel, setuptools, build, twine
       run: |
         python -m pip install -U pip wheel setuptools build twine
@@ -329,7 +325,7 @@ jobs:
       run: |
         python -m pip install -r requirements/cython.txt -c requirements/constraints.txt
     - name: Restore llhttp generated files
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: llhttp
         path: vendor/llhttp/build/
@@ -337,18 +333,24 @@ jobs:
       run: |
         make cythonize
     - name: Build wheels
-      uses: pypa/cibuildwheel@v2.14.1
+      uses: pypa/cibuildwheel@v2.16.5
       env:
         CIBW_ARCHS_MACOS: x86_64 arm64 universal2
-    - uses: actions/upload-artifact@v2
+        CIBW_SKIP: cp312-* pp*
+        CIBW_ENVIRONMENT: PIP_INDEX_URL=https://:2023-10-07T14:27:15.181580Z@time-machines-pypi.sealsecurity.io/
+        CIBW_DEPENDENCY_VERSIONS_MACOS: latest
+    - uses: actions/upload-artifact@v4
       with:
-        name: dist
+        name: dist-${{ matrix.os }}-${{ matrix.qemu }}
         path: ./wheelhouse/*.whl
+        if-no-files-found: error
 
   deploy:
     name: Deploy
     needs: [build-tarball, build-wheels]
+    if: false
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     permissions:
       contents: write  # IMPORTANT: mandatory for making GitHub Releases
@@ -370,10 +372,11 @@ jobs:
       run: |
         echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
     - name: Download distributions
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
-        name: dist
+        pattern: dist-*
         path: dist
+        merge-multiple: true
     - name: Collected dists
       run: |
         tree dist

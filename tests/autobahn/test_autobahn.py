@@ -12,6 +12,12 @@ python_on_whales = pytest.importorskip(
     reason="'python-on-whales' requires Python 3.7+",
 )
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="autobahn-testsuite is a Linux container image; "
+    "GitHub-hosted Windows runners can only run Windows containers",
+)
+
 
 @pytest.fixture(scope="session")
 def report_dir(tmp_path_factory: TempPathFactory) -> Path:

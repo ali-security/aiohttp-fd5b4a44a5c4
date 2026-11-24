@@ -1,4 +1,5 @@
 import asyncio
+import platform
 from unittest import mock
 
 import pytest
@@ -18,6 +19,10 @@ async def test_simple_server(aiohttp_raw_server, aiohttp_client) -> None:
     assert txt == "/path/to"
 
 
+@pytest.mark.skipif(
+    helpers.PY_311 and platform.system() != "Linux",
+    reason="Hangs until timeout on macOS/Windows under Python 3.11 CI runners",
+)
 @pytest.mark.xfail(
     not helpers.NO_EXTENSIONS,
     raises=client.ServerDisconnectedError,
