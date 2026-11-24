@@ -529,7 +529,7 @@ class ClientRequest:
 
         # copy payload headers
         assert body.headers
-        for (key, value) in body.headers.items():
+        for key, value in body.headers.items():
             if key in self.headers:
                 continue
             if key in self.skip_auto_headers:
@@ -670,8 +670,8 @@ class ClientRequest:
             self.headers[hdrs.CONNECTION] = connection
 
         # status + headers
-        status_line = "{0} {1} HTTP/{2[0]}.{2[1]}".format(
-            self.method, path, self.version
+        status_line = "{0} {1} HTTP/{v.major}.{v.minor}".format(
+            self.method, path, v=self.version
         )
         await writer.write_headers(status_line, self.headers)
 
@@ -770,9 +770,9 @@ class ClientResponse(HeadersMixin):
         # work after the response has finished reading the body.
         if session is None:
             # TODO: Fix session=None in tests (see ClientRequest.__init__).
-            self._resolve_charset: Callable[
-                ["ClientResponse", bytes], str
-            ] = lambda *_: "utf-8"
+            self._resolve_charset: Callable[["ClientResponse", bytes], str] = (
+                lambda *_: "utf-8"
+            )
         else:
             self._resolve_charset = session._resolve_charset
         if loop.get_debug():
